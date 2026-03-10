@@ -1,0 +1,6 @@
+{
+  "allocations": { "ETH": 50, "SOL": 30, "USDC": 20 },
+  "threshold": 5,
+  "chain": "arbitrum",
+  "rebalanceInterval": "daily"
+}
