@@ -109,8 +109,29 @@ export function calculateTrades(
 
 export async function executeRebalance(
   trades: Trade[],
-  client: SuwappuClient
+  client: SuwappuClient,
+  targets: Record<string, number> = {}
 ): Promise<void> {
+  if (Object.keys(targets).length > 0) {
+    const totalTarget = Object.values(targets).reduce((a, b) => a + b, 0);
+    if (Math.abs(totalTarget - 100) > 0.01) {
+      throw new Error(`Portfolio targets must sum to 100%, got ${totalTarget}%`);
+    }
+    if (Object.values(targets).some((t) => t < 0)) {
+      throw new Error('Portfolio targets cannot be negative');
+    }
+  }
+
+  const MAX_REBALANCE_USD = parseFloat(process.env.MAX_REBALANCE_USD || '10000');
+  const totalTrades = trades.reduce((sum, t) => sum + t.usdAmount, 0);
+  if (totalTrades > MAX_REBALANCE_USD) {
+    throw new Error(
+      `Total rebalance volume $${totalTrades} exceeds MAX_REBALANCE_USD ($${MAX_REBALANCE_USD})`
+    );
+  }
+
+  const SLIPPAGE_TOLERANCE = parseFloat(process.env.MAX_SLIPPAGE_PCT || '2') / 100;
+
   for (const trade of trades) {
     const spinner = ora(
       `Swapping $${trade.usdAmount.toFixed(2)} ${trade.from} → ${trade.to}...`
@@ -122,6 +143,18 @@ export async function executeRebalance(
       trade.usdAmount,
       trade.chain
     );
+
+    const amountOutMin = Number(quote.amountOut) * (1 - SLIPPAGE_TOLERANCE);
+    if (Number(quote.amountOut) < amountOutMin) {
+      spinner.fail(
+        chalk.red(
+          `${trade.from} → ${trade.to}: slippage exceeds ${process.env.MAX_SLIPPAGE_PCT || '2'}% tolerance, aborting trade`
+        )
+      );
+      throw new Error(
+        `Slippage on ${trade.from} → ${trade.to} exceeds tolerance (${SLIPPAGE_TOLERANCE * 100}%)`
+      );
+    }
 
     const tx = await client.executeSwap(quote.id);
     spinner.succeed(
