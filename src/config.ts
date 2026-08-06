@@ -1,36 +1,41 @@
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
+import { join } from "path";
 
 export interface Config {
   apiKey: string;
+  walletAddress: string;
   strategyPath?: string;
 }
 
 const DEFAULT_CONFIG_PATH = join(homedir(), ".suwappu-rebalancer", "config.json");
 
 export function loadConfig(configPath?: string): Config {
-  const apiKey = process.env.SUWAPPU_API_KEY;
-
-  // Try loading from file
   const filePath = configPath ?? DEFAULT_CONFIG_PATH;
   let fileConfig: Partial<Config> = {};
 
   if (existsSync(filePath)) {
-    const raw = readFileSync(filePath, "utf-8");
-    fileConfig = JSON.parse(raw) as Partial<Config>;
+    fileConfig = JSON.parse(readFileSync(filePath, "utf-8")) as Partial<Config>;
   }
 
-  const resolvedKey = apiKey ?? fileConfig.apiKey;
+  const apiKey = process.env.SUWAPPU_API_KEY ?? fileConfig.apiKey;
+  const walletAddress =
+    process.env.SUWAPPU_WALLET_ADDRESS ?? fileConfig.walletAddress;
 
-  if (!resolvedKey) {
+  if (!apiKey) {
     throw new Error(
-      "Missing API key. Set SUWAPPU_API_KEY env var or add apiKey to config file."
+      "Missing API key. Set SUWAPPU_API_KEY (recommended) or configure apiKey.",
+    );
+  }
+  if (!walletAddress) {
+    throw new Error(
+      "Missing wallet address. Set SUWAPPU_WALLET_ADDRESS (recommended) or configure walletAddress.",
     );
   }
 
   return {
-    apiKey: resolvedKey,
+    apiKey,
+    walletAddress,
     strategyPath: fileConfig.strategyPath,
   };
 }
