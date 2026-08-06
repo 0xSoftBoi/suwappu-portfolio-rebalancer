@@ -2,16 +2,17 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
-import { loadConfig } from "./config.js";
-import { loadStrategy, validateStrategy } from "./strategy.js";
-import { checkDrift, calculateTrades, executeRebalance } from "./rebalancer.js";
 import { createClient } from "@suwappu/sdk";
+import { loadConfig } from "./config.js";
+import { checkDrift, calculateTrades, executeRebalance } from "./rebalancer.js";
+import { loadStrategy, validateStrategy } from "./strategy.js";
+import { getPortfolio } from "./suwappu.js";
 
 const program = new Command();
 
 program
   .name("suwappu-rebalance")
-  .description("Automated portfolio rebalancer using Suwappu cross-chain DEX")
+  .description("Preview-by-default portfolio rebalancer built on Suwappu")
   .version("1.0.0");
 
 program
@@ -23,14 +24,15 @@ program
     const strategy = loadStrategy(config.strategyPath);
     validateStrategy(strategy);
 
-    const client = createClient({ apiKey: config.apiKey });
     const spinner = ora("Fetching portfolio...").start();
-
-    const portfolio = await client.getPortfolio(strategy.chain);
+    const portfolio = await getPortfolio(
+      config.apiKey,
+      config.walletAddress,
+      strategy.chain,
+    );
     spinner.stop();
 
     const drift = checkDrift(portfolio, strategy.allocations);
-
     console.log(chalk.bold("\nPortfolio Drift Report"));
     console.log(chalk.dim("─".repeat(50)));
 
@@ -44,35 +46,41 @@ program
             : chalk.green;
 
       console.log(
-        `  ${token.padEnd(8)} ${color(`${info.current.toFixed(1)}%`)} → target ${info.target}%  (drift: ${color(`${driftPct}%`)})`
+        `  ${token.padEnd(8)} ${color(`${info.current.toFixed(1)}%`)} → target ${info.target}%  (drift: ${color(`${driftPct}%`)})`,
       );
     }
 
     const needsRebalance = Object.values(drift).some(
-      (d) => Math.abs(d.drift) > strategy.threshold
+      (item) => Math.abs(item.drift) > strategy.threshold,
     );
-
     console.log(
       needsRebalance
         ? chalk.yellow(`\nRebalance needed (threshold: ${strategy.threshold}%)`)
-        : chalk.green("\nPortfolio is within target range")
+        : chalk.green("\nPortfolio is within target range"),
     );
   });
 
 program
   .command("rebalance")
-  .description("Execute rebalancing swaps")
+  .description("Plan rebalancing swaps; add --execute for live managed-wallet execution")
   .option("-c, --config <path>", "Config file path")
-  .option("--dry-run", "Show trades without executing", false)
+  .option("--execute", "submit live managed-wallet swaps", false)
+  .option("--dry-run", "deprecated alias for the now-default preview mode", false)
   .action(async (opts) => {
+    if (opts.execute && opts.dryRun) {
+      throw new Error("--execute and --dry-run cannot be used together");
+    }
+
     const config = loadConfig(opts.config);
     const strategy = loadStrategy(config.strategyPath);
     validateStrategy(strategy);
 
-    const client = createClient({ apiKey: config.apiKey });
     const spinner = ora("Fetching portfolio...").start();
-
-    const portfolio = await client.getPortfolio(strategy.chain);
+    const portfolio = await getPortfolio(
+      config.apiKey,
+      config.walletAddress,
+      strategy.chain,
+    );
     spinner.stop();
 
     const drift = checkDrift(portfolio, strategy.allocations);
@@ -83,33 +91,44 @@ program
       return;
     }
 
-    console.log(chalk.bold(`\n${opts.dryRun ? "DRY RUN — " : ""}Planned Trades:`));
+    console.log(
+      chalk.bold(`\n${opts.execute ? "LIVE — " : "PREVIEW — "}Planned Trades:`),
+    );
     for (const trade of trades) {
       console.log(
-        `  ${trade.from} → ${trade.to}: $${trade.usdAmount.toFixed(2)} on ${trade.chain}`
+        `  ${trade.from} → ${trade.to}: $${trade.usdAmount.toFixed(2)} on ${trade.chain}`,
       );
     }
 
-    if (opts.dryRun) {
-      console.log(chalk.dim("\nDry run — no trades executed."));
+    if (!opts.execute) {
+      console.log(chalk.dim("\nPreview only. Add --execute after reviewing the plan."));
       return;
     }
 
-    await executeRebalance(trades, client);
-    console.log(chalk.green("\nRebalance complete!"));
+    const client = createClient({ apiKey: config.apiKey });
+    await executeRebalance(trades, client, {
+      apiKey: config.apiKey,
+      walletAddress: config.walletAddress,
+      targets: strategy.allocations,
+    });
+    console.log(chalk.green("\nRebalance submissions accepted."));
   });
 
 program
   .command("config")
-  .description("Show current configuration")
+  .description("Show current non-secret configuration")
   .option("-c, --config <path>", "Config file path")
   .action((opts) => {
     const config = loadConfig(opts.config);
-    console.log(chalk.bold("Configuration:"));
-    console.log(`  API Key:  ${config.apiKey.slice(0, 20)}...`);
-    console.log(`  Strategy: ${config.strategyPath}`);
-
     const strategy = loadStrategy(config.strategyPath);
+
+    console.log(chalk.bold("Configuration:"));
+    console.log("  API Key:  configured (hidden)");
+    console.log(
+      `  Wallet:   ${config.walletAddress.slice(0, 6)}...${config.walletAddress.slice(-4)}`,
+    );
+    console.log(`  Strategy: ${config.strategyPath ?? "built-in default"}`);
+
     console.log(chalk.bold("\nTarget Allocations:"));
     for (const [token, pct] of Object.entries(strategy.allocations)) {
       console.log(`  ${token}: ${pct}%`);
@@ -118,4 +137,7 @@ program
     console.log(`  Chain: ${strategy.chain}`);
   });
 
-program.parse();
+program.parseAsync().catch((error) => {
+  console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+  process.exitCode = 1;
+});
