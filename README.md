@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue.svg)](https://www.typescriptlang.org)
 [![Suwappu SDK](https://img.shields.io/badge/Suwappu_SDK-0.5.0-purple.svg)](https://www.npmjs.com/package/@suwappu/sdk)
 
-Define target allocations (e.g. 50% ETH, 30% SOL, 20% USDC), set a drift threshold, and let the rebalancer calculate and execute the minimum swaps to bring your portfolio back to target — across any of 15 supported chains.
+Define target allocations (e.g. 50% ETH, 30% SOL, 20% USDC), set a drift threshold, and let the rebalancer calculate and execute the minimum swaps to bring your portfolio back to target — across any of 14 supported chains.
 
 ---
 
