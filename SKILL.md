@@ -1,46 +1,50 @@
 ---
 name: suwappu-rebalancer
-description: Automated portfolio rebalancer — define target allocations, detect drift, and execute cross-chain rebalancing swaps
+description: Preview-by-default Suwappu portfolio rebalancer — detect drift, plan trades, simulate, and explicitly opt into managed execution
 user-invocable: true
 tools:
   - check_drift
   - rebalance
   - show_config
 metadata:
-  openclaw.requires.env: ["SUWAPPU_API_KEY"]
+  openclaw.requires.env: ["SUWAPPU_API_KEY", "SUWAPPU_WALLET_ADDRESS"]
   openclaw.primaryEnv: SUWAPPU_API_KEY
   openclaw.emoji: "⚖️"
   openclaw.category: defi
   openclaw.tags: ["portfolio", "rebalance", "defi", "trading", "cross-chain"]
-  openclaw.install:
-    - type: npm
-      package: "suwappu-portfolio-rebalancer"
 ---
 
 # Suwappu Portfolio Rebalancer
 
-Maintain target allocations across tokens and chains. When drift exceeds your threshold, the rebalancer calculates and executes the minimum swaps to bring your portfolio back to target.
+Maintain target allocations with a visible execution boundary. The default `rebalance` action calculates and displays a plan; it never submits swaps.
 
 ## Setup
 
 ```bash
-export SUWAPPU_API_KEY=suwappu_sk_...    # Get one free at POST https://api.suwappu.bot/v1/agent/register
+export SUWAPPU_API_KEY=suwappu_sk_...
+export SUWAPPU_WALLET_ADDRESS=0xYourWallet
 ```
 
 ## Tools
 
 ### check_drift
-Show how far your portfolio has drifted from target allocations. Returns current vs target % for each token.
+
+Read the configured wallet portfolio and show current vs target allocation drift.
 
 ### rebalance
-Calculate and execute swaps to bring portfolio back to target. Supports `--dry-run` to preview trades first.
+
+Calculate and display the minimum rebalance plan. Preview is the default.
 
 ### show_config
-Display current target allocations, threshold, and chain.
 
-## Typical Flow
+Display non-secret configuration. The API key is not printed.
 
-1. Define targets: `{ "ETH": 50, "SOL": 30, "USDC": 20 }`
-2. `check_drift` — see which tokens are over/under weight
-3. `rebalance --dry-run` — preview the trades
-4. `rebalance` — execute
+## Typical flow
+
+1. Define target allocations.
+2. Run `check_drift`.
+3. Run `rebalance` and review the USD plan.
+4. Configure wallet policies and host approval.
+5. Only then run `rebalance --execute`; each quote is simulated before managed execution.
+
+A planned USD value is converted to source-token units before quoting. Never treat a dollar amount as if it were an ETH/SOL/token quantity.
