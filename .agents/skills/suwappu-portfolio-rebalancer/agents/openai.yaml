@@ -1,0 +1,6 @@
+interface:
+  display_name: "Suwappu Portfolio Rebalancer"
+  short_description: "Repo-specific patterns and workflows for suwappu-portfolio-rebalancer"
+  default_prompt: "Use the suwappu-portfolio-rebalancer repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true
