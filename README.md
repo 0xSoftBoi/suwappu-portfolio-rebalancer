@@ -1,39 +1,37 @@
 # Suwappu Portfolio Rebalancer
 
-A preview-by-default portfolio rebalancer built on [Suwappu](https://suwappu.bot).
+A preview-first **fixed-target rebalancing reference** built on [Suwappu](https://suwappu.bot). It shows how to turn managed-wallet balances into a deterministic drift plan, then cross the live execution boundary with simulation, durable idempotency, reconciliation, and final-amount accounting.
 
-Define target allocations, detect drift, inspect the exact USD rebalance plan, and only then opt into Suwappu managed-wallet execution with `--execute`.
+> This is builder infrastructure, not financial advice or a portfolio optimizer. Example target weights are arbitrary. Evaluate the allocation policy your users actually need before putting capital behind it.
 
-> This is a builder example, not financial advice. Use a dedicated wallet, conservative wallet policies, and small limits while developing.
+## Why this repo exists
 
-## Safety model
+The useful part to copy is the boundary between **portfolio policy** and **financial action**:
 
-`rebalance` is now a preview command. Merely having an API key configured does not submit a transaction.
-
-```bash
-# Read portfolio + show drift
-bun src/index.ts check
-
-# Calculate the plan. No funds move.
-bun src/index.ts rebalance
-
-# Explicit live managed-wallet mode
-bun src/index.ts rebalance --execute
+```text
+managed portfolio -> normalized holdings -> drift -> preview plan
+                  -> explicit --execute -> quote -> simulate
+                  -> persist intent -> submit -> reconcile -> final amounts
 ```
 
-The old `--dry-run` flag is accepted as a deprecated alias for preview mode, but preview is already the default.
+Flywheel covers multi-strategy composition; this repository stays narrow so a builder can see one target-allocation workflow end to end.
 
-Before every live swap this example:
+### Where it fits vs mature OSS
 
-1. expresses portfolio drift in USD;
-2. fetches the source token's USD price and converts that USD intent to **source-token units** before requesting a quote;
-3. requests a fresh Suwappu quote;
-4. calls `/v1/agent/swap/simulate` for the configured wallet and aborts on a failed simulation;
-5. submits the quote to the current managed-wallet `/v1/agent/swap/execute` pipeline.
+Do not turn this example into a home-grown quantitative research platform.
 
-That conversion in step 2 matters: a `$425` ETH rebalance must not be sent to the quote API as `425 ETH`.
+| Need | This repo | Better reference when the need is deeper |
+|---|---|---|
+| Suwappu managed-wallet portfolio + rebalance execution contract | Primary purpose | — |
+| Fixed target weights + drift threshold | Included | — |
+| Mean/semivariance, Black-Litterman, HRP, optimizer constraints | Not included | [PyPortfolioOpt](https://pyportfolioopt.readthedocs.io/) |
+| Full algorithm framework, scheduled portfolio construction, brokerage/reality models | Not included | [LEAN](https://www.quantconnect.com/docs/v2/writing-algorithms/algorithm-framework/portfolio-construction/key-concepts) |
+| Historical tax lots / tax-aware optimization | Not included | Add a purpose-built accounting/optimization layer |
+| Distributed execution ledger | Local reference journal | Move the state machine to your transactional database |
 
-## Quick start
+The differentiation here is not a better optimizer. It is a compact Suwappu-specific example for safely turning an allocation decision into a managed-wallet outcome.
+
+## Safe start
 
 ```bash
 git clone https://github.com/0xSoftBoi/suwappu-portfolio-rebalancer.git
@@ -41,35 +39,38 @@ cd suwappu-portfolio-rebalancer
 bun install --frozen-lockfile
 
 export SUWAPPU_API_KEY=suwappu_sk_...
-export SUWAPPU_WALLET_ADDRESS=0xYourWallet
+export SUWAPPU_WALLET_ADDRESS=0xYourManagedWallet
 
+# Read only.
 bun src/index.ts check
+
+# Plan only. No funds move.
 bun src/index.ts rebalance
 ```
 
-Register a Suwappu agent if needed:
+`SUWAPPU_WALLET_ADDRESS` must be the managed wallet belonging to the authenticated agent. The current portfolio endpoint rejects arbitrary third-party addresses. It is an address, never a private key.
+
+Create a managed wallet if needed:
 
 ```bash
-curl -X POST https://api.suwappu.bot/v1/agent/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"my-rebalancer"}'
+curl -X POST https://api.suwappu.bot/v1/agent/wallets \
+  -H "Authorization: Bearer $SUWAPPU_API_KEY"
 ```
 
-The wallet address is required by the current portfolio and simulation APIs. It is an address, never a private key.
+## What a rebalance means
 
-## Strategy configuration
+The default example policy is deliberately simple: **50% ETH / 50% USDC on Base, with a 5 percentage-point drift threshold**.
 
-By default the example uses the built-in 50% ETH / 30% SOL / 20% USDC strategy on Arbitrum. For a custom strategy, create a strategy file:
+For a custom policy, create `strategy.json`:
 
 ```json
 {
   "allocations": {
-    "ETH": 50,
-    "SOL": 30,
-    "USDC": 20
+    "ETH": 60,
+    "USDC": 40
   },
   "threshold": 5,
-  "chain": "arbitrum"
+  "chain": "base"
 }
 ```
 
@@ -81,46 +82,118 @@ Then point a rebalancer config at it:
 }
 ```
 
-Run with:
-
 ```bash
 bun src/index.ts check --config ./config.json
 bun src/index.ts rebalance --config ./config.json
 ```
 
-Prefer `SUWAPPU_API_KEY` and `SUWAPPU_WALLET_ADDRESS` environment variables over storing credentials or addresses in config files.
+The planner has explicit semantics:
+
+1. aggregate duplicate symbol rows case-insensitively;
+2. include every returned holding in total portfolio USD value;
+3. surface any holding absent from the target map as **UNCONFIGURED** and refuse to create a rebalance plan until the user decides what it means;
+4. require an explicit `0` target if liquidation of an existing holding is intended;
+5. if no configured asset drifts beyond the threshold, do nothing; and
+6. once the threshold is breached, pair all positive/negative dollar gaps toward the exact target weights.
+
+The explicit-zero rule prevents a surprise token, airdrop, or manually held asset from becoming an accidental sell authorization. The final rule avoids a different common failure: one asset can be +10 points overweight while two assets are each -5 points underweight. Looking only for deficits that independently exceed a 5-point threshold produces no executable plan even though the configured portfolio is clearly outside policy.
+
+The planner does not decide whether 60/40, 50/50, or any other allocation is sensible. That policy belongs to your product/research layer.
+
+## Live execution is an explicit capability
+
+Only `--execute` crosses the managed-wallet boundary:
+
+```bash
+export MAX_REBALANCE_USD=100
+bun src/index.ts rebalance --execute
+```
+
+For each planned swap the live path:
+
+1. converts the planned USD value to source-token units using the current USD price;
+2. requests a fresh Suwappu quote;
+3. requires `POST /v1/agent/swap/simulate` to return `would_execute=true` for the configured managed wallet;
+4. persists a durable economic intent and server-compatible `Idempotency-Key` **before** submission;
+5. submits through `POST /v1/agent/swap/execute`;
+6. reconciles a known `swap_id` through `GET /v1/agent/swap/status/:id`; and
+7. only reports a trade as completed when terminal status provides final input/output amounts; and
+8. stops after that one economic action so the next live invocation starts from a fresh portfolio instead of a stale multi-trade batch.
+
+An HTTP-successful simulation is not enough: `success=true` can coexist with `would_execute=false`. The example checks the latter.
+
+If execution times out, loses its connection, or returns a 5xx after a side effect may have started, the outcome is unknown. The next explicit `--execute` resumes the **same persisted intent and idempotency key**; a known `swap_id` is polled rather than resubmitted. The rebalancer will not plan a new economic action while that intent remains unresolved.
+
+Inspect the journal without creating an action:
+
+```bash
+bun src/index.ts executions
+bun src/index.ts executions --reconcile
+```
+
+`--reconcile` only polls known swap IDs. It never submits a trade.
 
 ## Commands
 
-| Command | Behavior |
+| Command | Authority |
 |---|---|
-| `check` | Read portfolio and show current vs target drift |
-| `rebalance` | Calculate/print the plan only |
-| `rebalance --execute` | Simulate and submit managed-wallet swaps |
-| `config` | Show non-secret configuration; API key is never printed |
+| `check` | Managed-wallet portfolio read only |
+| `rebalance` | Portfolio read + deterministic local plan |
+| `rebalance --execute` | Explicit managed execution; stops on unresolved finality |
+| `executions` | Read local execution journal |
+| `executions --reconcile` | Read/poll known swap IDs only |
+| `config` | Show non-secret policy/configuration; API key remains hidden |
+
+The legacy `--dry-run` flag is accepted only as a deprecated preview alias. Preview is already the default.
 
 ## Execution controls
 
 | Variable | Default | Purpose |
 |---|---:|---|
 | `SUWAPPU_API_KEY` | required | Agent API key |
-| `SUWAPPU_WALLET_ADDRESS` | required | Wallet used for portfolio lookup and simulation |
-| `MAX_REBALANCE_USD` | `10000` | Maximum aggregate USD volume accepted by one live run |
-| `SUWAPPU_API_URL` | production API | Optional API override for the current REST bridge |
+| `SUWAPPU_WALLET_ADDRESS` | required | Authenticated agent's managed wallet |
+| `MAX_REBALANCE_USD` | `1000` | Maximum USD value for the next live rebalance action; invalid values fail closed |
+| `SUWAPPU_REBALANCER_STATE_DIR` | `~/.suwappu-rebalancer` | Durable local execution journal location |
+| `SUWAPPU_API_URL` | production API | Optional API override applied consistently to SDK quotes and the REST execution bridge |
 
-`MAX_REBALANCE_USD` is a local defense in depth. Configure Suwappu wallet policies for the real server-side execution limits.
+`MAX_REBALANCE_USD` is only defense in depth. Configure server-side wallet policies, approvals, and a kill switch for real limits.
+
+The JSON journal is a single-process reference. A paid multi-worker service needs transactional persistence, a unique economic-intent constraint, locking/leases, and an append-only audit trail.
+
+Run only one live rebalancer process per local state directory. The reference JSON journal is deliberately not a cross-process lock.
+
+## Important limitations
+
+- Portfolio USD values and token prices are current snapshots, not a historical accounting system.
+- The example does not optimize risk/return, taxes, turnover, gas, or slippage when selecting target weights.
+- It does not model LP positions, debt, staking claims, tax lots, or assets the portfolio endpoint does not return.
+- It does not backtest an allocation policy. Use historical/walk-forward evaluation before automating one.
+- A fixed drift threshold reduces unnecessary actions; it does not make a target allocation profitable.
+
+For product-grade strategy promotion, follow the [Suwappu Strategy Lifecycle](https://suwappu.bot/docs/guides/strategy-lifecycle.md).
+
+## Build something people pay for
+
+The lower-risk product path is usually **monitoring before automation**:
+
+1. sell a treasury/allocation drift report or alert;
+2. add saved policies, history, exports, and team approval workflows;
+3. add quote + simulation previews;
+4. add policy-bounded managed execution only when customers ask for it.
+
+[`BUILDING_A_PRODUCT.md`](BUILDING_A_PRODUCT.md) turns this into concrete MVPs, activation/retention metrics, and a contribution-margin ledger. Product revenue and a customer's portfolio P&L are separate scoreboards.
 
 ## SDK compatibility
 
-The installable TypeScript dependency remains the published `@suwappu/sdk@0.4.x`. It is used for quote construction.
+This repository currently depends on `@suwappu/sdk@^0.4.0` for the installable quote contract. The core repository contains newer SDK source with typed managed execution, simulation, portfolio, policy, approval, audit, and kill-switch helpers.
 
-The `suwappubot` monorepo already contains newer 0.6.x SDK source for wallet-aware portfolio reads, `simulateSwap()`, managed `swap()`, self-custody `prepareSwap()`, policies, approvals, audit, and kill switches. Because 0.6.x is not yet published to npm, `src/suwappu.ts` isolates the current production REST calls this example needs.
+Until the matching package version is published, `src/suwappu.ts` keeps the current REST money-moving/reconciliation contract isolated from the older installed SDK. Verify the version you actually deploy instead of copying an unpublished method into production.
 
-Once the matching SDK package is released, the bridge can be replaced with those typed SDK methods.
+## Network and token discovery
 
-## Supported networks
+Do not hard-code chain counts or assume a symbol is tradable on every chain. Ask `GET /v1/agent/chains` and `GET /v1/agent/tokens?chain=<key>` at runtime when building a configurable product.
 
-Suwappu currently exposes 14 supported chains. Query `list_chains` / the API at runtime rather than hard-coding chain counts into application logic.
+The default policy uses the common ETH/USDC pair on Base so the example does not imply that Solana's native `SOL` exists on an EVM chain.
 
 ## Development
 
@@ -130,14 +203,15 @@ bun run typecheck
 bun test
 ```
 
-CI runs the same typecheck and tests as blocking checks. The tests include a regression for the USD-to-source-token conversion bug.
+Regression coverage includes production drift math, unexpected holdings, threshold funding, invalid live caps, `would_execute`, idempotent outcome-unknown retry, known-swap no-resubmit behavior, and quote-vs-final amount separation.
 
 ## Links
 
-- [Suwappu docs](https://docs.suwappu.bot)
-- [Published SDK](https://www.npmjs.com/package/@suwappu/sdk)
+- [Suwappu docs](https://suwappu.bot/docs)
+- [Published TypeScript SDK](https://www.npmjs.com/package/@suwappu/sdk)
 - [SDK source](https://github.com/0xSoftBoi/suwappubot/tree/main/packages/sdk)
-- [Hosted MCP](https://api.suwappu.bot/mcp)
+- [PyPortfolioOpt](https://pyportfolioopt.readthedocs.io/)
+- [LEAN portfolio construction](https://www.quantconnect.com/docs/v2/writing-algorithms/algorithm-framework/portfolio-construction/key-concepts)
 
 ## License
 
