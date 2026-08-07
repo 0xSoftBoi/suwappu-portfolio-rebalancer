@@ -23,10 +23,22 @@ upstream through the
 
 ## Custody and execution model
 
-Suwappu supports both self-custody and custodial product flows. This satellite
-repository does not make a custody guarantee: behavior depends on the API mode
-and configuration in use. Prefer dry-run or read-only modes where available,
-use test wallets before enabling execution, and never commit credentials.
+This repository's `check` and default `rebalance` flows are read/preview only.
+The explicit `rebalance --execute` path uses Suwappu's **managed-wallet**
+`POST /v1/agent/swap/execute` endpoint; this repository never stores a private
+key or signs locally. The configured wallet address must belong to the
+authenticated agent.
+
+Live execution requires a passing `would_execute` simulation, persists a
+durable idempotency key before submission, and reconciles a known `swap_id`
+before another economic action is planned. Run only one live process per local
+state directory; production multi-worker deployments must replace the JSON
+journal with transactional locking/uniqueness.
+
+Suwappu also supports an unsigned self-custody preparation flow, but this
+example does not expose it. Use test/dedicated wallets and conservative
+server-side wallet policies before enabling managed execution, and never
+commit credentials.
 
 ## Our commitment
 
