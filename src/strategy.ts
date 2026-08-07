@@ -5,13 +5,12 @@ export interface Strategy {
   allocations: Record<string, number>;
   threshold: number;
   chain: string;
-  rebalanceInterval?: string;
 }
 
 const DEFAULT_STRATEGY: Strategy = {
-  allocations: { ETH: 50, SOL: 30, USDC: 20 },
+  allocations: { ETH: 50, USDC: 50 },
   threshold: 5,
-  chain: "arbitrum",
+  chain: "base",
 };
 
 export function loadStrategy(configPath?: string): Strategy {
@@ -28,11 +27,31 @@ export function loadStrategy(configPath?: string): Strategy {
     allocations: data.allocations ?? DEFAULT_STRATEGY.allocations,
     threshold: data.threshold ?? DEFAULT_STRATEGY.threshold,
     chain: data.chain ?? DEFAULT_STRATEGY.chain,
-    rebalanceInterval: data.rebalanceInterval,
   };
 }
 
 export function validateStrategy(strategy: Strategy): void {
+  const allocations = Object.entries(strategy.allocations);
+  if (allocations.length === 0) {
+    throw new Error("At least one target allocation is required");
+  }
+
+  const normalized = new Set<string>();
+  for (const [token, target] of allocations) {
+    const cleanToken = token.trim();
+    if (!cleanToken || cleanToken !== token) {
+      throw new Error(`Invalid target token symbol: ${JSON.stringify(token)}`);
+    }
+    const key = cleanToken.toUpperCase();
+    if (normalized.has(key)) {
+      throw new Error(`Duplicate target token after case normalization: ${token}`);
+    }
+    normalized.add(key);
+    if (!Number.isFinite(target) || target < 0 || target > 100) {
+      throw new Error(`Allocation for ${token} must be between 0 and 100`);
+    }
+  }
+
   const total = Object.values(strategy.allocations).reduce((a, b) => a + b, 0);
 
   if (Math.abs(total - 100) > 0.01) {
@@ -41,7 +60,11 @@ export function validateStrategy(strategy: Strategy): void {
     );
   }
 
-  if (strategy.threshold <= 0 || strategy.threshold > 50) {
+  if (!Number.isFinite(strategy.threshold) || strategy.threshold <= 0 || strategy.threshold > 50) {
     throw new Error(`Threshold must be between 0 and 50, got ${strategy.threshold}`);
+  }
+
+  if (!strategy.chain.trim()) {
+    throw new Error("Strategy chain is required");
   }
 }
