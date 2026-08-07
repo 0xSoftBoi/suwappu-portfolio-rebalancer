@@ -1,6 +1,6 @@
 ---
 name: suwappu-rebalancer
-description: Preview-by-default Suwappu portfolio rebalancer — detect drift, plan trades, simulate, and explicitly opt into managed execution
+description: Preview-by-default fixed-target Suwappu rebalancer — detect drift, plan trades, and explicitly opt into outcome-safe managed execution
 user-invocable: true
 tools:
   - check_drift
@@ -16,7 +16,7 @@ metadata:
 
 # Suwappu Portfolio Rebalancer
 
-Maintain target allocations with a visible execution boundary. The default `rebalance` action calculates and displays a plan; it never submits swaps.
+Maintain fixed target allocations with a visible execution boundary. The default `rebalance` action calculates and displays a plan; it never submits swaps. Holdings absent from the target policy are surfaced as unconfigured and block planning until the user explicitly assigns a target (including `0` when liquidation is intentional).
 
 ## Setup
 
@@ -45,6 +45,9 @@ Display non-secret configuration. The API key is not printed.
 2. Run `check_drift`.
 3. Run `rebalance` and review the USD plan.
 4. Configure wallet policies and host approval.
-5. Only then run `rebalance --execute`; each quote is simulated before managed execution.
+5. Only then run `rebalance --execute`; each quote must return `would_execute=true`, then the intent is persisted before managed submission.
+6. Reconcile `swap_id` to a terminal result before treating it as completed or planning another action.
 
 A planned USD value is converted to source-token units before quoting. Never treat a dollar amount as if it were an ETH/SOL/token quantity.
+
+Use `executions --reconcile` to poll known swap IDs without submitting a replacement action. Timeout/network/5xx failures after managed submission begins can have an unknown outcome; keep the persisted idempotency key and reconcile first.
