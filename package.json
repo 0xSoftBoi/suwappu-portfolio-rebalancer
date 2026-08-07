@@ -1,7 +1,7 @@
 {
   "name": "suwappu-portfolio-rebalancer",
   "version": "1.0.0",
-  "description": "Automated portfolio rebalancer using Suwappu cross-chain DEX",
+  "description": "Preview-first fixed-target rebalancing reference with outcome-safe Suwappu managed execution",
   "type": "module",
   "bin": {
     "suwappu-rebalance": "src/index.ts"
@@ -10,7 +10,8 @@
     "start": "bun src/index.ts",
     "check": "bun src/index.ts check",
     "rebalance": "bun src/index.ts rebalance",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "repository": {
     "type": "git",
