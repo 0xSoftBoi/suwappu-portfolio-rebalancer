@@ -1,6 +1,6 @@
 ---
 name: suwappu-rebalancer
-description: Preview-by-default fixed-target Suwappu rebalancer — detect drift, plan trades, and explicitly opt into outcome-safe managed execution
+description: Standalone Suwappu treasury drift monitor and preview-by-default fixed-target rebalancer with outcome-safe managed execution
 user-invocable: true
 tools:
   - check_drift
@@ -17,6 +17,8 @@ metadata:
 # Suwappu Portfolio Rebalancer
 
 Maintain fixed target allocations with a visible execution boundary. The default `rebalance` action calculates and displays a plan; it never submits swaps. Holdings absent from the target policy are surfaced as unconfigured and block planning until the user explicitly assigns a target (including `0` when liquidation is intentional).
+
+For unattended monitoring, `check --json --record --fail-on-drift` emits machine-readable policy evidence and returns exit code 2 when drift or an unconfigured holding needs attention. Recorded snapshots contain a policy fingerprint and one-way wallet reference rather than credentials.
 
 ## Setup
 
@@ -50,4 +52,4 @@ Display non-secret configuration. The API key is not printed.
 
 A planned USD value is converted to source-token units before quoting. Never treat a dollar amount as if it were an ETH/SOL/token quantity.
 
-Use `executions --reconcile` to poll known swap IDs without submitting a replacement action. Timeout/network/5xx failures after managed submission begins can have an unknown outcome; keep the persisted idempotency key and reconcile first.
+Use `executions --reconcile` to poll known swap IDs without submitting a replacement action. Timeout/network/HTTP 408/5xx/malformed-success responses after managed submission begins can have an unknown outcome; keep the persisted idempotency key and reconcile first. Live CLI runs hold one local writer lock across resume, fresh portfolio read, planning, submission/reconciliation, and accounting.

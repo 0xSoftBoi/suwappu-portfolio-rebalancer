@@ -3,6 +3,7 @@ import {
   calculateTrades,
   checkDrift,
   maxRebalanceUsd,
+  minRebalanceUsd,
   nextTradeForLiveExecution,
   usdToTokenAmount,
 } from "../src/rebalancer.js";
@@ -95,5 +96,31 @@ describe("rebalance planning", () => {
       { from: "ETH", to: "DAI", usdAmount: 50, chain: "base" },
     ];
     expect(nextTradeForLiveExecution(plan)).toEqual(plan[0]);
+  });
+
+  test("can suppress dust legs with an explicit minimum action value", () => {
+    const drift = checkDrift(
+      [
+        { token: "ETH", balance: "1", usdValue: "510" },
+        { token: "USDC", balance: "1", usdValue: "490" },
+      ],
+      { ETH: 50, USDC: 50 },
+    );
+
+    expect(calculateTrades(drift, 0.5, "base", 20)).toEqual([]);
+    expect(calculateTrades(drift, 0.5, "base", 5)).toEqual([
+      { from: "ETH", to: "USDC", usdAmount: 10, chain: "base" },
+    ]);
+  });
+
+  test("fails closed when the minimum live action configuration is invalid", () => {
+    const previous = process.env.MIN_REBALANCE_USD;
+    process.env.MIN_REBALANCE_USD = "not-a-number";
+    try {
+      expect(() => minRebalanceUsd()).toThrow("non-negative number");
+    } finally {
+      if (previous === undefined) delete process.env.MIN_REBALANCE_USD;
+      else process.env.MIN_REBALANCE_USD = previous;
+    }
   });
 });

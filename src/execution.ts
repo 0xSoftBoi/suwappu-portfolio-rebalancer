@@ -5,9 +5,10 @@
  * instead of resubmitted, and an outcome-unknown retry keeps the same economic
  * intent even when it needs a fresh quote.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { readJsonFile, writeJsonAtomic } from "./storage.js";
 import {
   executeManagedSwap,
   getManagedSwapStatus,
@@ -65,6 +66,53 @@ function journalFile(): string {
   return join(stateDir(), "execution-journal.json");
 }
 
+function writerLockFile(): string {
+  return join(stateDir(), "rebalance-live.lock");
+}
+
+export class RebalanceWriterLockError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RebalanceWriterLockError";
+  }
+}
+
+/**
+ * Hold one lock across the complete live cycle: resume -> portfolio read ->
+ * plan -> submit/reconcile -> accounting. A per-request lock is insufficient
+ * because a second process could otherwise build a stale plan while the first
+ * process is completing an earlier action.
+ */
+export async function withRebalanceWriterLock<T>(work: () => Promise<T>): Promise<T> {
+  mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
+  chmodSync(stateDir(), 0o700);
+  const path = writerLockFile();
+  let fd: number;
+  try {
+    fd = openSync(path, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new RebalanceWriterLockError(
+        `Live rebalance lock ${path} already exists; another writer may be active. Stop live writers and reconcile before treating it as stale`,
+      );
+    }
+    throw error;
+  }
+
+  try {
+    writeFileSync(
+      fd,
+      JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }),
+      "utf-8",
+    );
+    fsyncSync(fd);
+    return await work();
+  } finally {
+    closeSync(fd);
+    unlinkSync(path);
+  }
+}
+
 const EXECUTION_PHASES = new Set<ExecutionPhase>([
   "prepared",
   "submitting",
@@ -98,29 +146,15 @@ function isExecutionIntent(value: unknown): value is ExecutionIntent {
 }
 
 function loadJournal(): ExecutionIntent[] {
-  if (!existsSync(journalFile())) return [];
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(journalFile(), "utf-8"));
-  } catch (error) {
-    throw new Error(
-      `Execution journal is unreadable; refusing to create a new economic action: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!Array.isArray(parsed) || !parsed.every(isExecutionIntent)) {
-    throw new Error("Execution journal is invalid; refusing to create a new economic action");
-  }
-  return parsed;
+  return readJsonFile<ExecutionIntent[]>(
+    journalFile(),
+    () => [],
+    (value) => Array.isArray(value) && value.every(isExecutionIntent),
+  );
 }
 
 function saveJournal(entries: ExecutionIntent[]): void {
-  const dir = stateDir();
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const target = journalFile();
-  const temporary = `${target}.${process.pid}.tmp`;
-  writeFileSync(temporary, JSON.stringify(entries, null, 2));
-  renameSync(temporary, target);
+  writeJsonAtomic(journalFile(), entries);
 }
 
 function saveEntry(entry: ExecutionIntent): void {
@@ -217,12 +251,14 @@ async function reconcileKnownSwap(apiKey: string, entry: ExecutionIntent): Promi
 
 /** Poll known swap IDs only. This function never creates a quote or submits. */
 export async function reconcileExecutionJournal(apiKey: string): Promise<ExecutionIntent[]> {
-  const entries = loadJournal();
-  for (const entry of entries) {
-    if (entry.accountedAt || !entry.swapId || entry.phase === "failed") continue;
-    await reconcileKnownSwap(apiKey, entry);
-  }
-  return listExecutionJournal(entries.length || 1);
+  return withRebalanceWriterLock(async () => {
+    const entries = loadJournal();
+    for (const entry of entries) {
+      if (entry.accountedAt || !entry.swapId || entry.phase === "failed") continue;
+      await reconcileKnownSwap(apiKey, entry);
+    }
+    return listExecutionJournal(entries.length || 1);
+  });
 }
 
 export async function runManagedExecution(args: {

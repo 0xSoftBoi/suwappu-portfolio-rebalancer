@@ -1,0 +1,5 @@
+{
+  "allocations": { "ETH": 50, "USDC": 50 },
+  "threshold": 5,
+  "chain": "base"
+}
