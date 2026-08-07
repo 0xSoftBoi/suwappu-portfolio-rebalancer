@@ -7,6 +7,8 @@ Keep two questions separate:
 1. Is the customer's target allocation appropriate and profitable after costs? That needs its own research/evaluation.
 2. Does your product repeatedly save the customer enough monitoring, approval, or operations work to justify its price? That is the business question.
 
+Version 2 is usable for the first question's **operations layer** without pretending to solve portfolio research: it records drift observations, emits a machine-readable monitor contract, fingerprints the active policy, fails closed on partial/typoed explicit policies, and keeps managed execution behind a durable single-writer/reconciliation boundary.
+
 ## Product ladder
 
 | Product | Customer value | Authority | First useful metric |
@@ -28,6 +30,15 @@ Start with the current `check` path:
 4. service stores a normalized drift snapshot;
 5. alert only when policy is breached; and
 6. link the alert to the exact holdings/targets that produced it.
+
+The standalone CLI already supplies the local evidence contract:
+
+```bash
+bun src/index.ts check --json --record --fail-on-drift
+bun src/index.ts history --json --limit 100
+```
+
+Exit code `2` means the configured threshold or a policy exception needs attention. The stored snapshot uses a policy fingerprint and one-way wallet reference so a scheduler can correlate evidence without printing the full wallet/API credential pair.
 
 Paid boundaries can include more wallets/policies, tighter monitoring intervals, longer history, webhook/Slack/email delivery, branded reports, or team workspaces.
 
@@ -80,6 +91,8 @@ For production, put intent state in your database and enforce one active economi
 This repository intentionally uses user-supplied fixed weights. If your value proposition is **portfolio optimization**, do not hide that work inside the execution loop.
 
 [PyPortfolioOpt](https://pyportfolioopt.readthedocs.io/) provides portfolio-optimization methods such as efficient-frontier approaches, Black-Litterman allocation, and hierarchical risk parity. [LEAN](https://www.quantconnect.com/docs/v2/writing-algorithms/algorithm-framework/portfolio-construction/key-concepts) provides a much broader algorithm framework with portfolio-construction/rebalance concepts and execution reality modeling.
+
+Their cost modeling is also a useful reality check. PyPortfolioOpt exposes a [transaction-cost objective](https://pyportfolioopt.readthedocs.io/en/latest/MeanVariance.html), and LEAN's [position-sizing helpers](https://www.quantconnect.com/docs/v2/writing-algorithms/trading-and-orders/position-sizing) account for lot size and pre-calculated order fees. `MIN_REBALANCE_USD` in this repo is only a dust/churn floor; it is not an optimizer or a replacement for quote/gas/slippage economics.
 
 A good product architecture can therefore be:
 
@@ -157,14 +170,18 @@ Before charging for live automation:
 - verify each managed wallet belongs to the authenticated customer/agent;
 - validate target weights, supported chains, and tokens at configuration time, and require an explicit target before liquidating an unexpected holding;
 - make preview the default and live execution a positive opt-in;
-- enforce local caps plus server-side wallet policies/approvals;
+- version/fingerprint the active portfolio policy and fail closed on missing explicit config/policy fields;
+- enforce a minimum economical action threshold when appropriate, a local maximum cap, plus server-side wallet policies/approvals;
 - require `would_execute=true`, not merely an HTTP-successful simulation;
 - persist an idempotency key before submission;
-- treat timeout/network/5xx execution failures as outcome-unknown;
+- bound managed REST calls; treat timeout/network/HTTP 408/5xx/malformed-success execution responses as outcome-unknown;
 - poll known swaps instead of submitting replacements;
 - consume terminal final amounts exactly once;
 - refresh the portfolio after a completed action before planning another batch;
+- keep a single local writer across resume -> fresh portfolio -> plan -> action -> accounting; use DB uniqueness/locks/leases when graduating to multiple workers;
+- back up durable state and make corrupt-state recovery an operator procedure, never “delete the file and retry”;
 - expose a kill switch and an operator-visible intent/audit timeline;
+- ship dependency audit, code scanning, tests/builds, and container-contract gates with every release;
 - keep customer investment outcome and builder revenue/cost in separate ledgers.
 
-The product moat is the workflow users trust and return to—not the existence of a `rebalance()` function.
+The product moat is the workflow users trust and return to—not the existence of a `rebalance()` function. The standalone deployment and incident contract is in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).

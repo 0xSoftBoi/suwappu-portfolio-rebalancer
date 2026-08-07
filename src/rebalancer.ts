@@ -1,7 +1,7 @@
 import ora from "ora";
 import chalk from "chalk";
 import type { SuwappuClient } from "@suwappu/sdk";
-import { getPrices } from "./suwappu.js";
+import { getPrices, withOperationDeadline } from "./suwappu.js";
 import {
   abandonPreparedExecution,
   getUnaccountedExecution,
@@ -84,9 +84,13 @@ export function calculateTrades(
   drift: Record<string, DriftInfo>,
   threshold: number,
   chain: string,
+  minimumUsd = 0,
 ): Trade[] {
   if (!Number.isFinite(threshold) || threshold <= 0) {
     throw new Error("Rebalance threshold must be positive");
+  }
+  if (!Number.isFinite(minimumUsd) || minimumUsd < 0) {
+    throw new Error("Minimum rebalance USD must be a non-negative number");
   }
   const unconfigured = Object.entries(drift)
     .filter(([, info]) => !info.configured && info.usdValue > 0.01)
@@ -125,12 +129,14 @@ export function calculateTrades(
 
   while (overweightIndex < overweight.length && underweightIndex < underweight.length) {
     const usdAmount = Math.min(remainingExcess, remainingDeficit);
-    trades.push({
-      from: overweight[overweightIndex].token,
-      to: underweight[underweightIndex].token,
-      usdAmount,
-      chain,
-    });
+    if (usdAmount > 0.01 && usdAmount >= minimumUsd) {
+      trades.push({
+        from: overweight[overweightIndex].token,
+        to: underweight[underweightIndex].token,
+        usdAmount,
+        chain,
+      });
+    }
 
     remainingExcess -= usdAmount;
     remainingDeficit -= usdAmount;
@@ -162,6 +168,7 @@ export interface ExecuteRebalanceOptions {
   apiKey: string;
   walletAddress: string;
   targets?: Record<string, number>;
+  policyFingerprint?: string;
 }
 
 export function maxRebalanceUsd(): number {
@@ -169,6 +176,15 @@ export function maxRebalanceUsd(): number {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error("MAX_REBALANCE_USD must be a positive number");
+  }
+  return value;
+}
+
+export function minRebalanceUsd(): number {
+  const raw = process.env.MIN_REBALANCE_USD ?? "0";
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error("MIN_REBALANCE_USD must be a non-negative number");
   }
   return value;
 }
@@ -197,11 +213,14 @@ async function runExecutionIntent(
     walletAddress: options.walletAddress,
     context,
     getQuote: async () => {
-      const quote = await client.getQuote(
-        terms.fromToken,
-        terms.toToken,
-        Number(terms.amount),
-        terms.chain,
+      const quote = await withOperationDeadline(
+        "get_quote",
+        () => client.getQuote(
+          terms.fromToken,
+          terms.toToken,
+          Number(terms.amount),
+          terms.chain,
+        ),
       );
       return { id: quote.id, toAmount: quote.toAmount };
     },
@@ -268,7 +287,7 @@ export async function resumeRebalanceExecution(
 export async function executeRebalance(
   trades: Trade[],
   client: SuwappuClient,
-  { apiKey, walletAddress, targets = {} }: ExecuteRebalanceOptions,
+  { apiKey, walletAddress, targets = {}, policyFingerprint }: ExecuteRebalanceOptions,
 ): Promise<{ executed: boolean; hadAdditionalPlannedTrades: boolean }> {
   if (Object.keys(targets).length > 0) {
     const totalTarget = Object.values(targets).reduce((a, b) => a + b, 0);
@@ -287,6 +306,7 @@ export async function executeRebalance(
   }
 
   const maxAllowedUsd = maxRebalanceUsd();
+  const minimumUsd = minRebalanceUsd();
   if (trades.some((trade) => (
     !trade.from || !trade.to || trade.from.toUpperCase() === trade.to.toUpperCase()
     || !Number.isFinite(trade.usdAmount) || trade.usdAmount <= 0 || !trade.chain
@@ -298,6 +318,11 @@ export async function executeRebalance(
   if (trade.usdAmount > maxAllowedUsd) {
     throw new Error(
       `Next rebalance action $${trade.usdAmount.toFixed(2)} exceeds MAX_REBALANCE_USD ($${maxAllowedUsd})`,
+    );
+  }
+  if (trade.usdAmount < minimumUsd) {
+    throw new Error(
+      `Next rebalance action $${trade.usdAmount.toFixed(2)} is below MIN_REBALANCE_USD ($${minimumUsd})`,
     );
   }
 
@@ -332,7 +357,11 @@ export async function executeRebalance(
       { apiKey, walletAddress, targets },
       actionKey,
       terms,
-      { plannedUsd: trade.usdAmount, sourcePriceUsd: priceUsd },
+      {
+        plannedUsd: trade.usdAmount,
+        sourcePriceUsd: priceUsd,
+        ...(policyFingerprint ? { policyFingerprint } : {}),
+      },
     );
     requireCompletedAmounts(intent);
     const txLabel = intent.txHash ? ` | tx ${intent.txHash.slice(0, 16)}...` : "";

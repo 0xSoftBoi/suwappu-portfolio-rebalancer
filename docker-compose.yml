@@ -1,0 +1,14 @@
+services:
+  rebalancer:
+    build: .
+    env_file: .env
+    environment:
+      SUWAPPU_REBALANCER_STATE_DIR: /data
+    volumes:
+      - rebalancer_state:/data
+    # One read/monitor pass by default. Scheduling belongs to the operator;
+    # never put a live --execute command behind an accidental restart loop.
+    restart: "no"
+
+volumes:
+  rebalancer_state:

@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { validateStrategy } from "../src/strategy.js";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { loadStrategy, validateStrategy } from "../src/strategy.js";
 
 describe("strategy validation", () => {
   test("accepts a normalized 100% target on a real chain key", () => {
@@ -24,5 +27,16 @@ describe("strategy validation", () => {
       threshold: 5,
       chain: "base",
     })).toThrow("Duplicate target token");
+  });
+
+  test("does not merge defaults into an explicitly incomplete strategy", () => {
+    const dir = mkdtempSync(join(tmpdir(), "suwappu-rebalancer-strategy-test-"));
+    const path = join(dir, "strategy.json");
+    try {
+      writeFileSync(path, JSON.stringify({ allocations: { ETH: 100 }, chain: "base" }));
+      expect(() => loadStrategy(path)).toThrow("defaults are not merged");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

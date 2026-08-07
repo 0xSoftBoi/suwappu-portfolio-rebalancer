@@ -21,12 +21,26 @@ export function loadStrategy(configPath?: string): Strategy {
     : join(process.cwd(), configPath);
 
   const raw = readFileSync(resolved, "utf-8");
-  const data = JSON.parse(raw) as Partial<Strategy>;
+  const data = JSON.parse(raw) as Partial<Strategy> | null;
+  if (!data || typeof data !== "object") {
+    throw new Error("Explicit strategy file must contain a JSON object");
+  }
+  if (
+    !data.allocations
+    || typeof data.allocations !== "object"
+    || Array.isArray(data.allocations)
+    || typeof data.threshold !== "number"
+    || typeof data.chain !== "string"
+  ) {
+    throw new Error(
+      "Explicit strategy must define allocations (object), threshold (number), and chain (string); defaults are not merged into an explicit policy",
+    );
+  }
 
   return {
-    allocations: data.allocations ?? DEFAULT_STRATEGY.allocations,
-    threshold: data.threshold ?? DEFAULT_STRATEGY.threshold,
-    chain: data.chain ?? DEFAULT_STRATEGY.chain,
+    allocations: data.allocations,
+    threshold: data.threshold,
+    chain: data.chain,
   };
 }
 

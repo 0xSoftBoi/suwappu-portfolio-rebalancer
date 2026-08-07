@@ -1,9 +1,9 @@
 # Security Policy
 
-This repository is a satellite / example application built on the
-[Suwappu API](https://github.com/0xSoftBoi/suwappubot). Some examples can
-initiate real financial transactions when execution is enabled. Treat API keys,
-wallet credentials, and configuration as sensitive.
+This repository is a standalone treasury-monitor/rebalancer built on the
+[Suwappu API](https://github.com/0xSoftBoi/suwappubot). Its explicit live mode
+can initiate real financial transactions. Treat API keys, wallet metadata,
+policy configuration, execution journals, and deployment state as sensitive.
 
 ## Reporting a vulnerability
 
@@ -31,14 +31,36 @@ authenticated agent.
 
 Live execution requires a passing `would_execute` simulation, persists a
 durable idempotency key before submission, and reconciles a known `swap_id`
-before another economic action is planned. Run only one live process per local
-state directory; production multi-worker deployments must replace the JSON
-journal with transactional locking/uniqueness.
+before another economic action is planned. The CLI also holds a filesystem
+lock across resume, fresh portfolio read, planning, submission/reconciliation,
+and accounting so a second local writer cannot act on a concurrently stale
+plan. Reconciliation takes the same lock so it cannot race a live writer. A
+crash can leave that lock as an intentional safety stop: stop schedulers,
+inspect state read-only, prove the owning process is gone, clear only the
+stale lock, then reconcile before re-enabling live work.
+
+Existing financial/monitor JSON state fails closed on parse/schema errors and
+is replaced atomically after file fsync with restrictive permissions. Do not
+delete a corrupt journal to make the application start. Restore/reconstruct it
+against authoritative execution status first.
+
+Direct REST operations have a bounded deadline. Managed timeout/network/HTTP
+408/5xx/malformed-success responses can be outcome-unknown and must be
+reconciled rather than blind-retried. Optional API events contain only
+operation/outcome/duration/status metadata, never credentials, wallet/quote/
+swap identifiers, policy terms, response bodies, or error messages.
+
+Production multi-worker deployments must replace the local store/lock with
+transactional intent uniqueness, locking/leases, and an append-only audit log.
 
 Suwappu also supports an unsigned self-custody preparation flow, but this
 example does not expose it. Use test/dedicated wallets and conservative
 server-side wallet policies before enabling managed execution, and never
 commit credentials.
+
+CI gates typecheck, behavior tests, the built CLI, dependency advisories,
+container construction, and CodeQL. These controls reduce risk; they are not a
+security audit, certification, or guarantee.
 
 ## Our commitment
 
