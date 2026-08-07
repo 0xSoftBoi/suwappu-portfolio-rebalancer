@@ -4,11 +4,25 @@ import chalk from "chalk";
 import ora from "ora";
 import { createClient } from "@suwappu/sdk";
 import { loadConfig } from "./config.js";
-import { checkDrift, calculateTrades, executeRebalance } from "./rebalancer.js";
+import {
+  checkDrift,
+  calculateTrades,
+  executeRebalance,
+  resumeRebalanceExecution,
+} from "./rebalancer.js";
 import { loadStrategy, validateStrategy } from "./strategy.js";
 import { getPortfolio } from "./suwappu.js";
+import { listExecutionJournal, reconcileExecutionJournal } from "./execution.js";
 
 const program = new Command();
+
+function getClient(apiKey: string) {
+  const configuredUrl = process.env.SUWAPPU_API_URL?.replace(/\/$/, "");
+  return createClient({
+    apiKey,
+    ...(configuredUrl ? { baseUrl: configuredUrl } : {}),
+  });
+}
 
 program
   .name("suwappu-rebalance")
@@ -46,7 +60,9 @@ program
             : chalk.green;
 
       console.log(
-        `  ${token.padEnd(8)} ${color(`${info.current.toFixed(1)}%`)} → target ${info.target}%  (drift: ${color(`${driftPct}%`)})`,
+        `  ${token.padEnd(8)} ${color(`${info.current.toFixed(1)}%`)} → ${
+          info.configured ? `target ${info.target}%` : "UNCONFIGURED"
+        }  (drift: ${color(`${driftPct}%`)})`,
       );
     }
 
@@ -74,6 +90,18 @@ program
     const config = loadConfig(opts.config);
     const strategy = loadStrategy(config.strategyPath);
     validateStrategy(strategy);
+    const client = opts.execute ? getClient(config.apiKey) : undefined;
+
+    // An explicit live invocation first resumes/reconciles the prior economic
+    // intent. Only after it is terminal do we fetch a fresh portfolio and plan
+    // another action.
+    if (client) {
+      await resumeRebalanceExecution(client, {
+        apiKey: config.apiKey,
+        walletAddress: config.walletAddress,
+        targets: strategy.allocations,
+      });
+    }
 
     const spinner = ora("Fetching portfolio...").start();
     const portfolio = await getPortfolio(
@@ -105,13 +133,39 @@ program
       return;
     }
 
-    const client = createClient({ apiKey: config.apiKey });
-    await executeRebalance(trades, client, {
+    const result = await executeRebalance(trades, client!, {
       apiKey: config.apiKey,
       walletAddress: config.walletAddress,
       targets: strategy.allocations,
     });
-    console.log(chalk.green("\nRebalance submissions accepted."));
+    console.log(chalk.green("\nOne rebalance action completed with reconciled final amounts."));
+    console.log(
+      result.hadAdditionalPlannedTrades
+        ? chalk.yellow("Fetch a fresh portfolio and rerun --execute before taking another planned action.")
+        : chalk.dim("Rerun rebalance to verify fresh post-trade drift before taking another action."),
+    );
+  });
+
+program
+  .command("executions")
+  .description("Inspect durable managed-execution intents and reconciliation state")
+  .option("--limit <n>", "number of recent intents", (value) => Number.parseInt(value, 10), 20)
+  .option("--reconcile", "poll known swap IDs before printing; never submits a trade", false)
+  .action(async (opts) => {
+    if (!Number.isInteger(opts.limit) || opts.limit <= 0) {
+      throw new Error("--limit must be a positive integer");
+    }
+    const entries = opts.reconcile
+      ? await reconcileExecutionJournal(loadConfig().apiKey)
+      : listExecutionJournal(opts.limit);
+    for (const entry of entries.slice(0, opts.limit)) {
+      const swap = entry.swapId ? ` swap=${entry.swapId}` : "";
+      const accounted = entry.accountedAt ? " accounted" : "";
+      console.log(
+        `${entry.createdAt} ${entry.actionKey} ${entry.phase}${swap}${accounted} intent=${entry.id}`,
+      );
+    }
+    if (entries.length === 0) console.log("No managed execution intents recorded yet.");
   });
 
 program
@@ -121,6 +175,7 @@ program
   .action((opts) => {
     const config = loadConfig(opts.config);
     const strategy = loadStrategy(config.strategyPath);
+    validateStrategy(strategy);
 
     console.log(chalk.bold("Configuration:"));
     console.log("  API Key:  configured (hidden)");
